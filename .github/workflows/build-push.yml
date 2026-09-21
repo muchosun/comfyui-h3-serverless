@@ -28,6 +28,13 @@ jobs:
           cp handler.py start.sh /tmp/rootfs/opt/rp/
           chmod +x /tmp/rootfs/opt/rp/start.sh
           python3 -m pip install --quiet --no-cache-dir --target /tmp/rootfs/opt/rp/vendor runpod
+          # Bake SageAttention into the venv so --use-sage-attention actually accelerates
+          # attention. The base image only ADDs the wheel to /opt/sage; the pod's runtime
+          # installs it — our lean launch skipped that, so attention fell back to slow default.
+          mkdir -p /tmp/sage
+          curl -fsSL -o /tmp/sage/sage.whl "https://github.com/Hearmeman24/comfyui-runtime/releases/download/sage-d1a57a5-cu130-torch2.11.0/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl"
+          python3 -m pip install --quiet --no-deps --target /tmp/rootfs/opt/venv/lib/python3.12/site-packages /tmp/sage/sage.whl
+          echo "sage baked:"; ls /tmp/rootfs/opt/venv/lib/python3.12/site-packages | grep -i sage
           # Bake the H3 custom nodes (template.json custom_nodes.target=image -> the pod
           # clones these into /ComfyUI/custom_nodes at boot; that dir is ephemeral on
           # serverless, so bake them here). All deps already in the venv; no pip needed.
@@ -42,7 +49,7 @@ jobs:
         run: |
           set -e
           cd /tmp
-          IMG=docker.io/muchosun/comfyui-h3-serverless:v9
+          IMG=docker.io/muchosun/comfyui-h3-serverless:v10
           BASE=docker.io/hearmeman/comfyui-minimax-template:v9
           ./crane mutate "$BASE" \
             --append /tmp/layer.tar \
