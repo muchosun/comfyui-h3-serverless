@@ -1,23 +1,41 @@
 #!/usr/bin/env bash
-# MiniMax H3 serverless entrypoint. Mirrors the proven bootstrap:
-# run the base image's /start_script.sh (model-path setup + per-env downloads +
-# ComfyUI launch on 8188) in the background, then hand off to the RunPod handler.
+# MiniMax H3 serverless entrypoint — LEAN direct launch.
+# The base image bakes ComfyUI + custom nodes at /ComfyUI and a venv at /opt/venv.
+# We do NOT run the base /start_script.sh (it git-clones from GitHub every boot and
+# re-downloads ~67GB of models when it can't find the volume at /workspace — on
+# serverless the network volume is mounted at /runpod-volume, so that path check
+# fails and it times out). Instead: point ComfyUI at the volume's models and launch.
 export PYTHONUNBUFFERED=1
-export PYTHONPATH=/opt/rp/vendor:${PYTHONPATH:-}
-LOG=/workspace/comfy_serverless.log
-mkdir -p /workspace 2>/dev/null || true
-python3 -c 'import runpod' 2>/dev/null || python3 -m pip install -q runpod 2>/dev/null || true
+COMFY=/ComfyUI
+PY=/opt/venv/bin/python
+LOG=/tmp/comfy_serverless.log
+[ -x "$PY" ] || PY=python3
 
-if [ -f /start_script.sh ]; then
-  echo "[start] launching base /start_script.sh in background" | tee -a "$LOG"
-  ( /start_script.sh >> "$LOG" 2>&1 ) &
+# Locate the network volume (serverless: /runpod-volume; pod fallback: /workspace)
+VOL=""
+for v in /runpod-volume /workspace; do
+  [ -d "$v/ComfyUI/models" ] && VOL="$v" && break
+done
+if [ -n "$VOL" ]; then
+  for sub in models input output user; do
+    if [ -d "$VOL/ComfyUI/$sub" ]; then
+      [ -L "$COMFY/$sub" ] || rm -rf "$COMFY/$sub" 2>/dev/null || true
+      ln -sfn "$VOL/ComfyUI/$sub" "$COMFY/$sub"
+    fi
+  done
+  mkdir -p "$COMFY/input" "$COMFY/output" 2>/dev/null || true
+  echo "[start] linked models/input/output/user from $VOL/ComfyUI" | tee -a "$LOG"
 else
-  echo "[start] /start_script.sh missing, launching ComfyUI directly" | tee -a "$LOG"
-  CDIR=""
-  for d in /ComfyUI /workspace/ComfyUI /comfyui; do [ -f "$d/main.py" ] && CDIR="$d" && break; done
-  [ -z "$CDIR" ] && { echo "[start] FATAL: ComfyUI not found" | tee -a "$LOG"; exit 1; }
-  EMP=""; [ -f "$CDIR/extra_model_paths.yaml" ] && EMP="--extra-model-paths-config $CDIR/extra_model_paths.yaml"
-  ( cd "$CDIR" && python3 -u main.py --listen 127.0.0.1 --port 8188 --use-sage-attention $EMP --disable-dynamic-vram >> "$LOG" 2>&1 ) &
+  echo "[start] WARNING: no volume with ComfyUI/models found (looked in /runpod-volume,/workspace)" | tee -a "$LOG"
 fi
-echo "[start] handing off to handler (pid of comfy init: $!)" | tee -a "$LOG"
-exec python3 -u /opt/rp/handler.py
+
+# Launch ComfyUI directly, CLEAN env (no vendor on PYTHONPATH -> no dep shadowing)
+( cd "$COMFY" && env -u PYTHONPATH "$PY" -u main.py --listen 127.0.0.1 --port 8188 \
+    --use-sage-attention --disable-auto-launch >> "$LOG" 2>&1 ) &
+echo "[start] ComfyUI launching (pid $!) from $COMFY via $PY" | tee -a "$LOG"
+
+# runpod SDK for the handler only: vendored dir on PYTHONPATH for THIS process,
+# with a venv-pip fallback (does not touch the ComfyUI process).
+"$PY" -c 'import runpod' 2>/dev/null || PYTHONPATH=/opt/rp/vendor "$PY" -c 'import runpod' 2>/dev/null \
+  || "$PY" -m pip install -q runpod 2>/dev/null || true
+exec env PYTHONPATH="/opt/rp/vendor:${PYTHONPATH:-}" "$PY" -u /opt/rp/handler.py

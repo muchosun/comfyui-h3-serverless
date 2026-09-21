@@ -34,7 +34,7 @@ jobs:
         run: |
           set -e
           cd /tmp
-          IMG=docker.io/muchosun/comfyui-h3-serverless:v2
+          IMG=docker.io/muchosun/comfyui-h3-serverless:v3
           BASE=docker.io/hearmeman/comfyui-minimax-template:v9
           ./crane mutate "$BASE" \
             --append /tmp/layer.tar \
@@ -45,6 +45,8 @@ jobs:
             --env I2V_CLEANUP=1 \
             --env COMFY_BOOT_TIMEOUT_S=600 \
             --env COMFY_HOST=127.0.0.1:8188 \
+            --env COMFY_INPUT_DIR=/ComfyUI/input \
+            --env COMFY_OUTPUT_DIR=/ComfyUI/output \
             -t "$IMG"
           echo "pushed digest:"; ./crane digest "$IMG"
           ./crane config "$IMG" | python3 -c 'import sys,json;c=json.load(sys.stdin)["config"];print("Entrypoint:",c.get("Entrypoint"));print("Cmd:",c.get("Cmd"))'

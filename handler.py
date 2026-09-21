@@ -43,6 +43,24 @@ def _http(method, path, body=None, timeout=30):
         return json.loads(raw) if raw else {}
 
 
+def _boot_diag():
+    """On boot failure, surface why: comfy log tail + model dir listings."""
+    out = []
+    for lp in ("/tmp/comfy_serverless.log", "/workspace/comfy_serverless.log"):
+        if os.path.exists(lp):
+            try:
+                out.append(f"--- {lp} (tail) ---\n" + open(lp, errors="replace").read()[-3500:])
+            except Exception as e:
+                out.append(f"{lp}: {e}")
+    for d in ("/runpod-volume/ComfyUI/models", "/workspace/ComfyUI/models",
+              "/ComfyUI/models", "/runpod-volume", "/workspace"):
+        try:
+            out.append(f"--- ls {d} ---\n" + "\n".join(sorted(os.listdir(d))[:40]))
+        except Exception as e:
+            out.append(f"ls {d}: {e}")
+    return ("\n".join(out))[:6500]
+
+
 def _wait_for_comfy():
     deadline = time.time() + BOOT_TIMEOUT
     while time.time() < deadline:
@@ -50,7 +68,7 @@ def _wait_for_comfy():
             _http("GET", "/system_stats", timeout=5); return
         except Exception:
             time.sleep(2)
-    raise WorkerError("comfy_boot", f"ComfyUI not ready after {BOOT_TIMEOUT}s")
+    raise WorkerError("comfy_boot", f"ComfyUI not ready after {BOOT_TIMEOUT}s\n{_boot_diag()}")
 
 
 def _decode_image(spec):
