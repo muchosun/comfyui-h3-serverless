@@ -6,12 +6,6 @@ jobs:
     runs-on: [self-hosted]
     steps:
       - uses: actions/checkout@v4
-      - name: Start buildkitd (unprivileged-container mode)
-        run: |
-          pkill -f buildkitd || true; sleep 1
-          nohup buildkitd --oci-worker-no-process-sandbox --oci-worker-snapshotter=native >/tmp/buildkitd.log 2>&1 &
-          for i in $(seq 1 30); do buildctl debug workers >/dev/null 2>&1 && break; sleep 1; done
-          buildctl debug workers || { cat /tmp/buildkitd.log; exit 1; }
       - name: Docker Hub auth
         env:
           TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -19,11 +13,16 @@ jobs:
           mkdir -p $HOME/.docker
           AUTH=$(printf 'muchosun:%s' "$TOKEN" | base64 -w0)
           printf '{"auths":{"https://index.docker.io/v1/":{"auth":"%s"}}}' "$AUTH" > $HOME/.docker/config.json
-      - name: Build and push
+      - name: Build and push (userns buildkit)
         run: |
-          buildctl build \
-            --frontend dockerfile.v0 \
-            --local context=$PWD \
-            --local dockerfile=$PWD \
-            --output type=image,name=docker.io/muchosun/comfyui-h3-serverless:v1,push=true \
-            --progress=plain
+          pkill -f buildkitd || true; sleep 1
+          cat > /tmp/dobuild.sh <<'EOS'
+          set -e
+          buildkitd --oci-worker-no-process-sandbox --oci-worker-snapshotter=native >/tmp/buildkitd.log 2>&1 &
+          for i in $(seq 1 40); do buildctl debug workers >/dev/null 2>&1 && break; sleep 1; done
+          buildctl debug workers >/dev/null 2>&1 || { echo BUILDKITD_FAIL; cat /tmp/buildkitd.log; exit 1; }
+          buildctl build --frontend dockerfile.v0 --local context="$WORK" --local dockerfile="$WORK" \
+            --output type=image,name=docker.io/muchosun/comfyui-h3-serverless:v1,push=true --progress=plain
+          EOS
+          chmod +x /tmp/dobuild.sh
+          WORK="$PWD" HOME="$HOME" unshare --user --map-root-user --mount --fork bash /tmp/dobuild.sh
