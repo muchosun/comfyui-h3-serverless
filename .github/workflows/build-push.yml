@@ -21,20 +21,28 @@ jobs:
           curl -fsSL https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz -o crane.tgz
           tar xzf crane.tgz crane
           ./crane version
-      - name: Assemble layer (files + vendored runpod)
+      - name: Assemble layer (files + vendored runpod + H3 custom nodes)
         run: |
           set -e
-          rm -rf /tmp/rootfs && mkdir -p /tmp/rootfs/opt/rp/vendor
+          rm -rf /tmp/rootfs && mkdir -p /tmp/rootfs/opt/rp/vendor /tmp/rootfs/ComfyUI/custom_nodes
           cp handler.py start.sh /tmp/rootfs/opt/rp/
           chmod +x /tmp/rootfs/opt/rp/start.sh
           python3 -m pip install --quiet --no-cache-dir --target /tmp/rootfs/opt/rp/vendor runpod
-          ( cd /tmp/rootfs && tar --numeric-owner --owner=0 --group=0 -cf /tmp/layer.tar opt )
-          echo "layer bytes: $(stat -c %s /tmp/layer.tar)"
+          # Bake the H3 custom nodes (template.json custom_nodes.target=image -> the pod
+          # clones these into /ComfyUI/custom_nodes at boot; that dir is ephemeral on
+          # serverless, so bake them here). All deps already in the venv; no pip needed.
+          cd /tmp/rootfs/ComfyUI/custom_nodes
+          clone(){ git clone --quiet "$1" "$2" && git -C "$2" checkout --quiet "$3" && rm -rf "$2/.git"; }
+          clone https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler.git Comfyui_Minimax_h3_latent_Upscaler d7c01b9011f2e8439493f6c02c29995a27df276f
+          clone https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod.git ComfyUI-MiniMaxH3Mod 22ca77e247375dd47fc7340286b5f391887d3410
+          clone https://github.com/Saganaki22/ComfyUI-Viggle-Animate-H3.git ComfyUI-Viggle-Animate-H3 77425b6f955e98e96c5e0dc6ca199dc62e63ad8a
+          ( cd /tmp/rootfs && tar --numeric-owner --owner=0 --group=0 -cf /tmp/layer.tar opt ComfyUI )
+          echo "layer bytes: $(stat -c %s /tmp/layer.tar)"; echo "nodes:"; ls -1 /tmp/rootfs/ComfyUI/custom_nodes
       - name: Append layer + set config + push (crane)
         run: |
           set -e
           cd /tmp
-          IMG=docker.io/muchosun/comfyui-h3-serverless:v5
+          IMG=docker.io/muchosun/comfyui-h3-serverless:v6
           BASE=docker.io/hearmeman/comfyui-minimax-template:v9
           ./crane mutate "$BASE" \
             --append /tmp/layer.tar \
