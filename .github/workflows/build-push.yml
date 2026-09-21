@@ -33,7 +33,9 @@ jobs:
           # installs it — our lean launch skipped that, so attention fell back to slow default.
           mkdir -p /tmp/sage
           ( cd /tmp/sage && curl -fsSL -O "https://github.com/Hearmeman24/comfyui-runtime/releases/download/sage-d1a57a5-cu130-torch2.11.0/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl" )
-          python3 -m pip install --quiet --no-deps --target /tmp/rootfs/opt/venv/lib/python3.12/site-packages /tmp/sage/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl
+          # a wheel is a zip; extract straight into the image venv (cp312), bypassing pip
+          # platform checks (the runner python differs from the image python 3.12).
+          python3 -c "import zipfile; zipfile.ZipFile('/tmp/sage/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl').extractall('/tmp/rootfs/opt/venv/lib/python3.12/site-packages')"
           echo "sage baked:"; ls /tmp/rootfs/opt/venv/lib/python3.12/site-packages | grep -i sage
           # Bake the H3 custom nodes (template.json custom_nodes.target=image -> the pod
           # clones these into /ComfyUI/custom_nodes at boot; that dir is ephemeral on
