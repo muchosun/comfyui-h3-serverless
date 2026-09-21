@@ -31,7 +31,7 @@ fi
 
 # Launch ComfyUI directly, CLEAN env (no vendor on PYTHONPATH -> no dep shadowing)
 ( cd "$COMFY" && env -u PYTHONPATH "$PY" -u main.py --listen 127.0.0.1 --port 8188 \
-    --use-sage-attention --disable-auto-launch >> "$LOG" 2>&1 ) &
+    --use-sage-attention --disable-auto-launch --disable-dynamic-vram >> "$LOG" 2>&1 ) &
 echo "[start] ComfyUI launching (pid $!) from $COMFY via $PY" | tee -a "$LOG"
 
 # runpod SDK for the handler only: vendored dir on PYTHONPATH for THIS process,

@@ -169,8 +169,20 @@ def handler(job):
 
     deadline = time.time() + POLL_TIMEOUT
     entry = None
+    conn_fails = 0
     while time.time() < deadline:
-        entry = _history(pid)
+        try:
+            entry = _history(pid)
+            conn_fails = 0
+        except (urllib.error.URLError, ConnectionError, OSError) as e:
+            # ComfyUI unreachable mid-run -> it likely crashed (OOM / CUDA error).
+            # Retry a few times (it may be briefly busy), then surface its log.
+            conn_fails += 1
+            if conn_fails >= 5:
+                raise WorkerError("comfy_died",
+                    f"ComfyUI became unreachable mid-run ({e}); likely crashed.\n{_boot_diag()}")
+            time.sleep(3)
+            continue
         if entry and entry.get("status", {}).get("completed"):
             break
         if entry and entry.get("status", {}).get("status_str") == "error":
