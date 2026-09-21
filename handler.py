@@ -148,6 +148,17 @@ def _collect_video(entry):
     return None, None
 
 
+def _gpu():
+    """GPU name/VRAM the worker is actually running on (from ComfyUI /system_stats)."""
+    try:
+        st = _http("GET", "/system_stats", timeout=10)
+        dev = (st.get("devices") or [{}])[0]
+        vram = dev.get("vram_total")
+        return {"name": dev.get("name"), "vram_gb": round(vram / (1024**3), 1) if vram else None}
+    except Exception as e:
+        return {"error": str(e)[:120]}
+
+
 def _timing(entry, workflow):
     """Per-node timing from ComfyUI history messages, to see where wall-time goes
     (model load lead-in vs KSampler vs upscaler vs VAE decode)."""
@@ -231,6 +242,7 @@ def handler(job):
         out["timing"] = _timing(entry, workflow)
     except Exception as e:
         out["timing"] = {"error": str(e)}
+    out["gpu"] = _gpu()
     if size_mb <= MAX_INLINE_MB:
         with open(path, "rb") as f:
             out["video_base64"] = base64.b64encode(f.read()).decode()
