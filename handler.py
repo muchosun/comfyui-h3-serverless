@@ -148,6 +148,35 @@ def _collect_video(entry):
     return None, None
 
 
+def _timing(entry, workflow):
+    """Per-node timing from ComfyUI history messages, to see where wall-time goes
+    (model load lead-in vs KSampler vs upscaler vs VAE decode)."""
+    msgs = (entry.get("status") or {}).get("messages") or []
+    ev = []
+    for m in msgs:
+        if isinstance(m, list) and len(m) == 2 and isinstance(m[1], dict) and "timestamp" in m[1]:
+            ev.append((m[1]["timestamp"], m[0], m[1].get("node")))
+    ev.sort()
+    if len(ev) < 2:
+        return {}
+    def cls(nid):
+        try:
+            return workflow.get(str(nid), {}).get("class_type", str(nid))
+        except Exception:
+            return str(nid)
+    t0 = ev[0][0]
+    gaps = []
+    for i in range(1, len(ev)):
+        dt = round((ev[i][0] - ev[i - 1][0]) / 1000.0, 1)
+        node = ev[i][2] or ev[i - 1][2]
+        gaps.append({"s": dt, "after_event": ev[i - 1][1], "node": cls(node)})
+    gaps_sorted = sorted(gaps, key=lambda g: g["s"], reverse=True)[:8]
+    return {"total_s": round((ev[-1][0] - t0) / 1000.0, 1),
+            "events": len(ev),
+            "lead_in_s": round((ev[1][0] - t0) / 1000.0, 1),
+            "top_gaps": gaps_sorted}
+
+
 def handler(job):
     ji = job.get("input") or {}
     workflow = ji.get("workflow")
@@ -198,6 +227,10 @@ def handler(job):
 
     size_mb = os.path.getsize(path) / (1024 * 1024)
     out = {"filename": fn, "mime": "video/mp4", "size_mb": round(size_mb, 2)}
+    try:
+        out["timing"] = _timing(entry, workflow)
+    except Exception as e:
+        out["timing"] = {"error": str(e)}
     if size_mb <= MAX_INLINE_MB:
         with open(path, "rb") as f:
             out["video_base64"] = base64.b64encode(f.read()).decode()
