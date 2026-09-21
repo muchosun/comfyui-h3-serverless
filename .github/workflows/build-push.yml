@@ -6,11 +6,12 @@ jobs:
     runs-on: [self-hosted]
     steps:
       - uses: actions/checkout@v4
-      - name: Start buildkitd
+      - name: Start buildkitd (unprivileged-container mode)
         run: |
-          pgrep buildkitd || (nohup buildkitd --oci-worker-snapshotter=native >/tmp/buildkitd.log 2>&1 &) 
-          for i in $(seq 1 20); do buildctl debug workers >/dev/null 2>&1 && break; sleep 1; done
-          buildctl debug workers || (cat /tmp/buildkitd.log; exit 1)
+          pkill -f buildkitd || true; sleep 1
+          nohup buildkitd --oci-worker-no-process-sandbox --oci-worker-snapshotter=native >/tmp/buildkitd.log 2>&1 &
+          for i in $(seq 1 30); do buildctl debug workers >/dev/null 2>&1 && break; sleep 1; done
+          buildctl debug workers || { cat /tmp/buildkitd.log; exit 1; }
       - name: Docker Hub auth
         env:
           TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -24,4 +25,5 @@ jobs:
             --frontend dockerfile.v0 \
             --local context=$PWD \
             --local dockerfile=$PWD \
-            --output type=image,name=docker.io/muchosun/comfyui-h3-serverless:v1,push=true
+            --output type=image,name=docker.io/muchosun/comfyui-h3-serverless:v1,push=true \
+            --progress=plain
