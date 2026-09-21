@@ -124,8 +124,11 @@ def _save_input(name, raw):
             raise WorkerError("input_save", f"could not provide input {bn}: {e}")
 
 
-def _submit(workflow, client_id, prompt_id):
-    body = {"prompt": workflow, "client_id": client_id, "prompt_id": prompt_id}
+def _submit(workflow, client_id):
+    # Do NOT pass prompt_id: newer ComfyUI validates it must be a canonical
+    # hyphenated UUID, which the RunPod job id (e.g. "<uuid>-e2") is not.
+    # Let ComfyUI mint one and read it back from the response.
+    body = {"prompt": workflow, "client_id": client_id}
     return _http("POST", "/prompt", body, timeout=60)
 
 
@@ -157,9 +160,10 @@ def handler(job):
         _save_input(name, raw)
 
     client_id = uuid.uuid4().hex
-    prompt_id = job.get("id") or uuid.uuid4().hex
-    res = _submit(workflow, client_id, prompt_id)
-    pid = res.get("prompt_id", prompt_id)
+    res = _submit(workflow, client_id)
+    pid = res.get("prompt_id")
+    if not pid:
+        raise WorkerError("submit", f"ComfyUI returned no prompt_id: {json.dumps(res)[:400]}")
     if res.get("node_errors"):
         raise WorkerError("graph_error", json.dumps(res["node_errors"])[:500])
 
