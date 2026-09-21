@@ -38,9 +38,16 @@ def _http(method, path, body=None, timeout=30):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method,
                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read()
-        return json.loads(raw) if raw else {}
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        try:
+            eb = e.read().decode(errors="replace")
+        except Exception:
+            eb = ""
+        raise WorkerError("comfy_http", f"{method} {path} -> HTTP {e.code}: {eb[:1800]}")
 
 
 def _boot_diag():
@@ -88,11 +95,33 @@ def _decode_image(spec):
 
 
 def _save_input(name, raw):
-    os.makedirs(INPUT_DIR, exist_ok=True)
-    path = os.path.join(INPUT_DIR, os.path.basename(name))
-    with open(path, "wb") as f:
-        f.write(raw)
-    return os.path.basename(name)
+    """Hand the input to ComfyUI via its own /upload/image so it lands exactly
+    where ComfyUI reads inputs, regardless of the on-disk input path / symlinks.
+    Falls back to a direct disk write if the upload endpoint is unavailable."""
+    bn = os.path.basename(name)
+    boundary = "----h3rp" + uuid.uuid4().hex
+    data = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; "
+        f"filename=\"{bn}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    ).encode() + raw + b"\r\n" + (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"overwrite\"\r\n\r\ntrue\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+    req = urllib.request.Request(
+        f"http://{COMFY}/upload/image", data=data, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            r.read()
+        return bn
+    except Exception:
+        try:
+            os.makedirs(INPUT_DIR, exist_ok=True)
+            with open(os.path.join(INPUT_DIR, bn), "wb") as f:
+                f.write(raw)
+            return bn
+        except Exception as e:
+            raise WorkerError("input_save", f"could not provide input {bn}: {e}")
 
 
 def _submit(workflow, client_id, prompt_id):
