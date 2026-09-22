@@ -61,7 +61,9 @@ Multiple images are supported (one object per input the graph consumes).
 
 ```json
 { "filename": "..._00003_.mp4", "mime": "video/mp4", "size_mb": 3.16,
-  "video_base64": "<...>" }          // inline when size_mb <= 25
+  "video_base64": "<...>",                              // inline when size_mb <= 25
+  "gpu": { "name": "NVIDIA A100 80GB PCIe", "vram_gb": 80 },
+  "timing": { "total_s": 179.1, "lead_in_s": 0.1 } }
 ```
 or, for larger outputs:
 ```json
@@ -72,6 +74,9 @@ or, for larger outputs:
 > lives on the ephemeral worker and is **not** retrievable by the caller — for
 > big outputs raise the cutoff or add an S3/bucket upload in `handler.py`
 > (`_collect_video`). Typical 5 s clips are a few MB → inline is fine.
+>
+> Every successful response also carries **`gpu`** (which card actually ran the
+> job) and **`timing`** (ComfyUI wall-time) — useful for diagnosing speed.
 
 ## 4. The bundled H3 workflow (`h3_autores_workflow_api.json`)
 
@@ -89,15 +94,30 @@ Models available on the attached network volume (already referenced by the graph
 - **LoRAs:** MysticXXX_MMH3-V4.safetensors, minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors, minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors, minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors
 - **Text encoder (CLIP, 32B — required by H3):** qwen3vl_32b_minimax_h3_int8_convrot.safetensors
 
-## 5. Timing & scaling
+## 5. Timing, cost & GPU
 
-- **Cold start** (first request after idle): ~4–5 min = image pull + ComfyUI boot,
-  then generation. The endpoint scales to **0 workers when idle** (min=0), so
-  expect a cold start after a quiet period.
-- **Warm**: generation only. The bundled autores+2×‑upscale 5 s clip is ~6–7 min
-  on A100‑80; smaller/no‑upscale variants are faster.
-- Want instant responses? Ask the owner to set **workers min = 1** (keeps one GPU
-  warm 24/7, at cost). Concurrency = workers max.
+The bundled autores + 2×‑upscale **5 s clip (1536×2304, 124 frames)** — measured,
+image `v10` (SageAttention baked, which roughly halved the time):
+
+| GPU (serverless pool) | exec | ~$/clip (warm) | notes |
+|---|---|---|---|
+| **A100‑80** (`AMPERE_80`) | **~181 s** | **~$0.08** | fastest+cheapest available; scarce in EU‑RO‑1 |
+| RTX PRO 6000 96GB (`BLACKWELL_96`) | ~283 s | ~$0.16 | sage helps Blackwell workstation less |
+| RTX PRO 4500 32GB (in `BLACKWELL_32`) | ~400–430 s | ~$0.08 | always available → the fallback |
+
+- **Cold start** adds the delay: image pull (~12 GB, cached per worker after first
+  pull) + boot. Wildly variable while the endpoint is cold/new; steady‑state is
+  short. RunPod **FlashBoot** shortens repeat cold starts.
+- **Warm worker** (same worker, back‑to‑back) ≈ **exec only, ~8 s delay** — models
+  stay resident, not re‑loaded. Idle window = `idleTimeout` (120 s) then scales to 0.
+- **Concurrency**: `workers max = 3`. Multiple concurrent requests spin up to 3
+  workers; under concurrent load in EU‑RO‑1 they mostly land on **PRO 4500 (~400 s)**
+  because A100 is too scarce to feed several workers at once. Single requests can
+  still get A100.
+- **Idle cost = $0** (`workers min = 0`; the endpoint holds no GPU when idle).
+  Setting min = 1 keeps one GPU warm 24/7 (fast, but ~$1.6/hr standing) — only
+  worth it for steady traffic.
+- Per‑job hard cap: `executionTimeoutMs = 900 s` (a stuck job can't bill forever).
 
 ## 6. Errors
 
@@ -164,8 +184,12 @@ while True:
 
 - Source of truth: this repo. `handler.py` (worker), `start.sh` (boot),
   `Dockerfile`, `.github/workflows/build-push.yml` (the crane build).
-- Image: `docker.io/muchosun/comfyui-h3-serverless:v7` (public). Rebuild:
+- Image: `docker.io/muchosun/comfyui-h3-serverless:v10` (public). Rebuild:
   bump the tag in the workflow, push, run `build-push`, then point the serverless
   **template `0dnakgvhf1`** at the new tag. See `BUILDER_SETUP.md`.
-- The image bakes ComfyUI + custom nodes; **models live on the network volume**
-  (`uocae6ided`, mounted at `/runpod-volume`), not in the image.
+- The image bakes ComfyUI + the H3 custom nodes **+ SageAttention** (critical for
+  speed: `--use-sage-attention` was a no‑op without it, ~2× slower). **Models live
+  on the network volume** (`uocae6ided`, mounted at `/runpod-volume`), not baked in.
+- Endpoint `p5a1eli13sgzb5`, GPU pool `AMPERE_80,ADA_48_PRO,BLACKWELL_32`
+  (A100 / L40S / 5090 preferred, PRO 4500 as the never‑throttle fallback), region
+  EU‑RO‑1, workers 0–3. The handler contract is unchanged across image versions.
